@@ -10,7 +10,7 @@ import { useCart } from '@/contexts/CartContext';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import api from '@/lib/api';
-import { getSectorsByStadiumId, type Sector as StaticSector } from '@/lib/stadium-sectors';
+import { getSectorsByMatch, type Sector as StaticSector } from '@/lib/stadium-sectors';
 import type { Match as MatchType } from '@/data/matches';
 import type { Stadium as StadiumType, Sector } from '@/data/stadiums';
 import type { Team as TeamType } from '@/data/teams';
@@ -93,7 +93,10 @@ const MatchDetail: React.FC = () => {
   });
 
   const stadium: ApiStadium | undefined = stadiumData?.data?.stadium;
-  const sectors = match ? getSectorsByStadiumId(match.stadium_id) : [];
+  // Preços por FASE (Final >> Quartas >> Grupos) baseados em FIFA 2026 oficial
+  const sectors = match
+    ? getSectorsByMatch(match.stage, stadium?.capacity || 70000)
+    : [];
 
   if (isLoading) {
     return (

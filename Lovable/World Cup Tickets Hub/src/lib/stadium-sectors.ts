@@ -1,8 +1,9 @@
-// Setores e preços de ingresso por estádio.
-// Os dados de TIME/PARTIDA/CAPACIDADE/IMAGEM/COORDENADAS vêm da API.
-// Setores são dados de UI específicos da app (preços, capacidade
-// por categoria) — ficam estáticos aqui porque não há nem demanda
-// nem schema no banco para variações por estádio em runtime.
+// Pricing de ingressos baseado em (fase do torneio + capacidade do estádio).
+// Preços em USD seguindo a tabela oficial FIFA 2026 publicada em 2025.
+// Distribuição de capacidade por setor segue o padrão de estádios mundiais:
+//   VIP/Premium  ~7%
+//   Categoria 1 ~30%
+//   Categoria 2 ~63%
 
 export interface Sector {
   id: string;
@@ -12,79 +13,91 @@ export interface Sector {
   description: string;
 }
 
-// Lookup principal: por ID do estádio no DB (id INT do Azure SQL).
-// Mantemos um fallback genérico caso um estádio recém-cadastrado pelo
-// admin não tenha entrada aqui (preços padronizados).
-const SECTORS_BY_ID: Record<number, Sector[]> = {
-  // 1 — MetLife Stadium (final)
-  1: [
-    { id: 'vip',  name: 'VIP Premium',  price: 2500, capacity: 5000,  description: 'Assentos premium com vista privilegiada, lounge exclusivo e serviço de alimentação incluso.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 1200, capacity: 25000, description: 'Assentos nas áreas centrais do estádio com excelente visibilidade do campo.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 600,  capacity: 52500, description: 'Assentos nas áreas laterais e superiores, ótimo custo-benefício.' },
-  ],
-  // 2 — AT&T Stadium
-  2: [
-    { id: 'vip',  name: 'VIP Premium',  price: 2200, capacity: 4500,  description: 'Suítes privativas com catering exclusivo e acesso ao campo pré-jogo.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 1000, capacity: 22000, description: 'Vista central com cobertura do telão gigante.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 500,  capacity: 53500, description: 'Setores superiores com visão panorâmica.' },
-  ],
-  // 3 — SoFi Stadium
-  3: [
-    { id: 'vip',  name: 'VIP Premium',  price: 2800, capacity: 4000,  description: 'Experiência ultra-premium com champagne, buffet gourmet e meet & greet.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 1400, capacity: 20000, description: 'Assentos centrais com acesso a áreas exclusivas.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 700,  capacity: 46240, description: 'Ampla visibilidade em setores elevados.' },
-  ],
-  // 4 — Rose Bowl (legacy)
-  4: [
-    { id: 'vip',  name: 'VIP Premium',  price: 1500, capacity: 3000,  description: 'Setor histórico com vista privilegiada.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 700,  capacity: 15000, description: 'Setores centrais.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 350,  capacity: 50000, description: 'Arquibancadas tradicionais.' },
-  ],
-  // 5 — Lumen Field
-  5: [
-    { id: 'vip',  name: 'VIP Premium',  price: 1750, capacity: 3600,  description: 'Vista para o Monte Rainier e Puget Sound.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 800,  capacity: 18500, description: 'Setores cobertos com excelente visibilidade.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 360,  capacity: 46640, description: 'Arquibancadas abertas com vista panorâmica.' },
-  ],
-  // 6 — Estadio Azteca
-  6: [
-    { id: 'vip',  name: 'VIP Premium',  price: 1600, capacity: 5000,  description: 'Palcos históricos com serviço de luxo mexicano.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 700,  capacity: 25000, description: 'Setores centrais com vista para o gramado sagrado.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 300,  capacity: 57523, description: 'Arquibancadas vibrantes com a paixão mexicana.' },
-  ],
-  // 7 — Estadio BBVA
-  7: [
-    { id: 'vip',  name: 'VIP Premium',  price: 1400, capacity: 3000,  description: 'Suítes com vista para as montanhas de Monterrey.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 650,  capacity: 15000, description: 'Assentos premium com cobertura total.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 280,  capacity: 35500, description: 'Setores abertos com ambiente festivo.' },
-  ],
-  // 8 — BC Place
-  8: [
-    { id: 'vip',  name: 'VIP Premium',  price: 1800, capacity: 3200,  description: 'Lounges com vista para as North Shore Mountains.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 850,  capacity: 16000, description: 'Assentos centrais sob o teto retrátil.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 400,  capacity: 35300, description: 'Setores com ambiente multicultural de Vancouver.' },
-  ],
-  // 9 — BMO Field
-  9: [
-    { id: 'vip',  name: 'VIP Premium',  price: 1700, capacity: 2800,  description: 'Vista para o skyline de Toronto e CN Tower.' },
-    { id: 'cat1', name: 'Categoria 1',  price: 820,  capacity: 13000, description: 'Setores premium com aquecimento.' },
-    { id: 'cat2', name: 'Categoria 2',  price: 380,  capacity: 29700, description: 'Arquibancadas ao ar livre estilo europeu.' },
-  ],
-  // 10+ — novos estádios FIFA 2026 (Story 0.9): Mercedes/Gillette/Hard Rock/Lincoln/NRG/Arrowhead/Levi's/Akron
-  // Os IDs reais saem da migration; usamos defaults pelas faixas comuns por capacidade
+// Preços oficiais FIFA 2026 (USD) por fase × categoria
+const PRICES_BY_STAGE: Record<string, { vip: number; cat1: number; cat2: number }> = {
+  'Fase de Grupos':  { vip: 1210, cat1: 560,  cat2: 300  },
+  group:             { vip: 1210, cat1: 560,  cat2: 300  },
+  round_of_32:       { vip: 1490, cat1: 890,  cat2: 480  },
+  round_of_16:       { vip: 1775, cat1: 1090, cat2: 600  },
+  quarter_final:     { vip: 1985, cat1: 1250, cat2: 930  },
+  semi_final:        { vip: 2735, cat1: 1675, cat2: 1180 },
+  third_place:       { vip: 1465, cat1: 935,  cat2: 660  },
+  final:             { vip: 6730, cat1: 4210, cat2: 2030 },
 };
 
-const DEFAULT_SECTORS: Sector[] = [
-  { id: 'vip',  name: 'VIP Premium',  price: 1800, capacity: 4000,  description: 'Suítes premium com serviço exclusivo e vista privilegiada.' },
-  { id: 'cat1', name: 'Categoria 1',  price: 850,  capacity: 18000, description: 'Setores centrais com excelente visibilidade do gramado.' },
-  { id: 'cat2', name: 'Categoria 2',  price: 400,  capacity: 40000, description: 'Setores tradicionais com ambiente de torcida.' },
-];
+// Capacidade ratio padrão de estádio mundial (FIFA / NFL)
+const SECTOR_RATIOS = {
+  vip: 0.07,
+  cat1: 0.30,
+  // cat2 = resto (~63%)
+};
 
-export function getSectorsByStadiumId(id: number): Sector[] {
-  return SECTORS_BY_ID[id] || DEFAULT_SECTORS;
+const SECTOR_DESCRIPTIONS = {
+  vip:  'Suítes premium com vista privilegiada, lounge exclusivo, alimentação inclusa e acesso a áreas restritas.',
+  cat1: 'Assentos nas áreas centrais e cobertas do estádio, excelente visibilidade do gramado.',
+  cat2: 'Assentos nas áreas superiores e laterais — ótimo custo-benefício, ambiente vibrante de torcida.',
+};
+
+// Capacidade por estádio (cache local para o helper de listagem;
+// evita ida à API só para mostrar "a partir de $X")
+const STADIUM_CAPACITY_FALLBACK: Record<number, number> = {
+  1:  82500,  // MetLife
+  2:  80000,  // AT&T
+  3:  70240,  // SoFi
+  4:  90000,  // Rose Bowl (legacy)
+  5:  68740,  // Lumen
+  6:  87523,  // Azteca
+  7:  53500,  // BBVA
+  8:  54500,  // BC Place
+  9:  45736,  // BMO
+  10: 71000,  // Mercedes-Benz
+  11: 65878,  // Gillette
+  12: 65326,  // Hard Rock
+  13: 69796,  // Lincoln
+  14: 72220,  // NRG
+  15: 76416,  // Arrowhead
+  16: 68500,  // Levi's
+  17: 49850,  // Akron
+};
+
+function splitCapacity(stadiumCapacity: number) {
+  const vip = Math.round(stadiumCapacity * SECTOR_RATIOS.vip);
+  const cat1 = Math.round(stadiumCapacity * SECTOR_RATIOS.cat1);
+  const cat2 = stadiumCapacity - vip - cat1;
+  return { vip, cat1, cat2 };
 }
 
-export function getStadiumStartingPrice(id: number): number {
-  const sectors = getSectorsByStadiumId(id);
-  return sectors[2]?.price || sectors[sectors.length - 1]?.price || 300;
+/**
+ * Setores + preços de UM jogo específico baseado em fase + capacidade.
+ * Use isto na MatchDetail e em qualquer lugar que precise do preço real.
+ */
+export function getSectorsByMatch(
+  stage: string,
+  stadiumCapacity: number
+): Sector[] {
+  const prices = PRICES_BY_STAGE[stage] || PRICES_BY_STAGE['Fase de Grupos'];
+  const caps = splitCapacity(stadiumCapacity || 70000);
+
+  return [
+    { id: 'vip',  name: 'VIP Premium',  price: prices.vip,  capacity: caps.vip,  description: SECTOR_DESCRIPTIONS.vip },
+    { id: 'cat1', name: 'Categoria 1',  price: prices.cat1, capacity: caps.cat1, description: SECTOR_DESCRIPTIONS.cat1 },
+    { id: 'cat2', name: 'Categoria 2',  price: prices.cat2, capacity: caps.cat2, description: SECTOR_DESCRIPTIONS.cat2 },
+  ];
+}
+
+/**
+ * Setores genéricos do estádio (Fase de Grupos como default).
+ * Use isto em StadiumDetail quando não há contexto de fase.
+ */
+export function getSectorsByStadiumId(stadiumId: number): Sector[] {
+  const cap = STADIUM_CAPACITY_FALLBACK[stadiumId] || 70000;
+  return getSectorsByMatch('Fase de Grupos', cap);
+}
+
+/**
+ * Preço inicial (mais barato) que o usuário verá em listagens.
+ * Cat2 da Fase de Grupos = $300 — o piso oficial FIFA 2026 (não-residente).
+ */
+export function getStadiumStartingPrice(_stadiumId: number): number {
+  return PRICES_BY_STAGE['Fase de Grupos'].cat2;
 }
