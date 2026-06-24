@@ -616,7 +616,12 @@ Você só vai **re-disparar a migração**. O único bloqueio é o database dest
 
 ##### Passo 3 — Apagar o DATABASE de destino (o passo que mais esquecem)
 
-> 🛑 Apague o **DATABASE** `FIFA2026Tickets`, **NÃO o servidor** `sql-prd-tk-cin-001`. O servidor fica (mantém firewall, "Allow Azure services" e admin); só o banco dentro dele é apagado. Apagar o servidor por engano vira retrabalho.
+> 🛑🛑 **ATENÇÃO — onde NÃO mexer:**
+> - **NÃO é na VM.** O SQL Server da `vm-data` (origem, IP `10.30.1.4`) **não deve ser alterado em nada** — ele continua sendo a fonte da verdade até o cutover. **Nada de apagar tabela, banco ou serviço na VM.**
+> - Esta operação é **exclusivamente no DESTINO**, ou seja, no **Azure SQL Database** (`sql-prd-tk-cin-001`).
+> - E mesmo no destino: apague o **DATABASE** `FIFA2026Tickets`, **NÃO o servidor** `sql-prd-tk-cin-001`. O servidor fica (mantém firewall, "Allow Azure services" e admin); só o banco dentro dele é apagado. Apagar o servidor por engano vira retrabalho.
+>
+> 📌 **Resumindo:** você só toca no **database de destino no Azure SQL**. **VM = intocada. Servidor Azure SQL = intocado. Só o database de destino é apagado.**
 
 1. Portal → busque **`sql-prd-tk-cin-001`** → abra o **SQL server** (ícone de servidor, **não** o de database).
 2. Menu lateral → **SQL databases**.
