@@ -13,14 +13,16 @@
 // PII (AC-6): entra_oid NUNCA é buscado, renderizado, copiado nem posto em OG tag. O
 // endpoint só devolve region + correlation-IDs (identificadores técnicos) + count.
 //
-// POSTURA REAL do endpoint (honesta — NÃO é fail-closed): `/diploma-summary` herda a
-// postura do FlowEvents F6 — ingress EXTERNO, SEM revalidar JWT e FORA do escopo do
-// X-Gateway-Key (ADE-009 Inv 1). O gate `enabled: isAuthenticated` abaixo é só de UX
-// (client-side): NÃO protege o endpoint. Qualquer chamador pode consultar qualquer userId
-// e receber os GUIDs opacos (não-PII) daquele aluno — mesma classe do `/api/flow/recent`
-// já exposto sem escopo desde a 2.6. Registrado como débito (mesma família do MEDIUM-1) em
-// docs/security/final-security-debt.md. Escopo infalsificável por identidade exigiria
-// JIT/X-Entra-OID no caminho FlowEvents (ou ingress interno) — fora de escopo por AC-9.
+// POSTURA REAL do endpoint (PROTEGIDA — EPIC-004 §Emenda MEDIUM-4 / ADE-009 v1.1): diferente
+// do resto do F6, o `/diploma-summary` passou a exigir DUAS provas que um anônimo da internet
+// não tem — (1) IDENTIDADE: `fetchDiplomaSummary` manda `Authorization: Bearer` (via gateway v2)
+// e o blanket RequireAuthorization barra o anônimo (401); (2) PROVENIÊNCIA: o gateway injeta o
+// X-Diploma-Key route-scoped, validado timing-safe no FlowEvents (barra o FQDN direto do ca-flow).
+// CONSEQUÊNCIA (correção do split de identidade): o Bearer de cliente = token CIAM, então o
+// Diploma agora exige a sessão v2/CIAM (gate `enabled: gateReady`, via useIsAuthenticated). O
+// userId da telemetria é resolvido pelo /api/v2/me (não o id v1), casando com o que a compra usou.
+// Residual aceito (fast-follow): um aluno AUTENTICADO ainda pode pedir ?userId=<outro> e ler GUIDs
+// opacos+count (zero PII) — igual/menor que o `/recent`. Detalhe em docs/security/final-security-debt.md.
 //
 // Rota NOVA e aditiva (AC-9): AuthProvider/api.ts/apiV2.ts e as demais rotas intocados.
 // Design: spec da @ux-design-expert (Uma) — herda o DNA visual do TicketStub (troféu/selo
@@ -53,9 +55,12 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useIsAuthenticated, useMsal } from '@azure/msal-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePrefersReducedMotion } from '@/hooks/useFlowConnection';
 import { fetchDiplomaSummary } from '@/lib/flowApi';
+import { meV2 } from '@/lib/apiV2';
+import { isEntraConfigured, loginRequest } from '@/lib/authV2';
 
 // AC-4 — assinatura fixa, LITERAL e obrigatória. String exata (não uma variação livre).
 const SIGNATURE = 'Squad AIOX + você';
@@ -218,9 +223,29 @@ function DiplomaSkeleton() {
 // Página.
 // -----------------------------------------------------------------------------
 export default function Diploma() {
-  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  // `user` (v1) é usado APENAS para o nome no cartão (display) — degrada para um fallback
+  // quando o aluno é nato-CIAM (sem conta v1). A telemetria NÃO depende dele (ver abaixo).
+  const { user } = useAuth();
+  // Emenda MEDIUM-4 — o endpoint agora exige Bearer (via gateway). Bearer de cliente = CIAM.
+  // Gate na sessão CIAM (mesmo primitivo do Chatbot/LoginV2Button), NÃO no auth v1: um aluno
+  // logado só em v1 não tem token CIAM → sem esse gate, a query dispararia sem Bearer → 401.
+  const isV2Authenticated = useIsAuthenticated();
+  const v2Configured = isEntraConfigured();
+  const gateReady = v2Configured && isV2Authenticated;
+  const { instance: msalInstance } = useMsal();
   const reducedMotion = usePrefersReducedMotion();
   const [showAllSeals, setShowAllSeals] = useState(false);
+
+  // UX-1 (review rodada 3) — CTA de login do GATE, VISÍVEL em todos os breakpoints (o
+  // `LoginV2Button` da navbar é `hidden lg:flex`, some no mobile). Reusa o MESMO fluxo
+  // (loginPopup + loginRequest / PKCE) — só muda a visibilidade, iniciado pelo aluno.
+  const handleV2Login = async () => {
+    try {
+      await msalInstance.loginPopup(loginRequest);
+    } catch (error) {
+      console.error('Falha no Login v2 (Entra):', error);
+    }
+  };
 
   // AC-3 — hora do deploy: build-time injetado no bundle pelo CI (VITE_BUILD_TIME).
   // NUNCA um Date.now() do navegador. Ausente (build local) → degrada gracioso.
@@ -233,11 +258,22 @@ export default function Diploma() {
     refetch,
     isRefetching,
   } = useQuery({
-    queryKey: ['diploma-summary', user?.id],
-    // AC-6 — escopo por userId v1 do próprio aluno. `enabled` é gate de UX (só dispara com o
-    // aluno logado no client) — NÃO é autenticação do endpoint (ver POSTURA REAL no cabeçalho).
-    queryFn: () => fetchDiplomaSummary(user!.id),
-    enabled: isAuthenticated && !!user?.id,
+    queryKey: ['diploma-summary'],
+    // AC-6 — o userId da telemetria (customDimensions.UserId) é o int resolvido pelo /api/v2/me
+    // (CIAM), NÃO o id v1: para o aluno nato-CIAM o id v1 é null, e para o aluno vinculado o /me
+    // devolve o MESMO id da base — é EXATAMENTE o valor que o Checkout usou na compra (mesma
+    // resolução de Story 3.5). Resolver aqui garante que o escopo bate com a telemetria e exige,
+    // de quebra, a sessão CIAM (o /me precisa do Bearer) — alinhado com a proteção do endpoint.
+    queryFn: async () => {
+      const me = await meV2();
+      if (!me.userId || !Number.isFinite(me.userId)) {
+        throw new Error(me.error ?? 'Sem sessão CIAM para resolver sua identidade (Login v2).');
+      }
+      return fetchDiplomaSummary(String(me.userId));
+    },
+    // `enabled` só dispara com sessão CIAM presente → nenhum fetch anônimo (evita o 401) e nenhum
+    // popup de token inesperado ao abrir a página (getV2AccessToken só é chamado quando há conta).
+    enabled: gateReady,
     staleTime: 60_000,
   });
 
@@ -317,21 +353,28 @@ export default function Diploma() {
           </h1>
         </header>
 
-        {/* Gate: enquanto o auth carrega, mostra o esqueleto do diploma (não spinner solto). */}
-        {authLoading ? (
-          <DiplomaSkeleton />
-        ) : !isAuthenticated ? (
-          // Estado NÃO AUTENTICADO — é um gate, não um erro.
+        {/* Gate CIAM: o Diploma consome um endpoint protegido (Bearer via gateway) — precisa da
+            sessão v2/CIAM. Sem ela, é um GATE (não um erro): o aluno clica no "Login v2" (popup
+            iniciado por ELE, nunca automático). Cobre tanto o aluno só-v1 quanto o não-logado. */}
+        {!gateReady ? (
           <GateCard
             icon={Lock}
-            title="Faça login para ver seu Diploma"
+            title="Entre com o Login v2 (Entra/CIAM) para ver seu Diploma"
             action={
-              <Button asChild>
-                <Link to="/login">Entrar</Link>
-              </Button>
+              v2Configured ? (
+                <Button onClick={handleV2Login} className="gap-2">
+                  <ShieldCheck className="h-4 w-4" />
+                  Login v2 (Entra)
+                </Button>
+              ) : (
+                <Button asChild variant="outline">
+                  <Link to="/login">Voltar ao login</Link>
+                </Button>
+              )
             }
           >
-            O Diploma renderiza a telemetria da SUA sessão — precisamos saber quem é você.
+            O Diploma renderiza a telemetria REAL da SUA sessão — a identidade que a comprovou é a
+            do fluxo v2 (Entra External ID / CIAM), a mesma da sua compra na Grande Final.
           </GateCard>
         ) : isLoading ? (
           <DiplomaSkeleton />

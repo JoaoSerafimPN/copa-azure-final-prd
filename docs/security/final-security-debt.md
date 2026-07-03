@@ -55,13 +55,17 @@ A **lógica** de hardening está correta e fail-closed **no código** (confirmad
 
 - Ainda seta `EntraTenantId/ClientId` (single-issuer) que o gateway dual-issuer atual ignora → startup guard falharia. Reconciliar com a config dual-issuer real.
 
-### 🟡 MEDIUM-4 — FlowEvents `/api/flow/diploma-summary` — telemetria por `userId` anônima no ingress externo (Story 4.6)
+### ✅ MEDIUM-4 — FlowEvents `/api/flow/diploma-summary` — **FECHADO pela Opção F** (Story 4.6 §Emenda MEDIUM-4, 2026-07-03)
 
-- **Origem:** Story 4.6 (Diploma vivo) adicionou `GET /api/flow/diploma-summary?userId={id}` (`FlowEndpoints.cs`) reusando a MESMA fonte App Insights do F6. Herda **exatamente** a postura do MEDIUM-1: o FlowEvents tem ingress `external: true`, **não** revalida JWT e está **fora** do escopo do `X-Gateway-Key` (ADE-009 Inv 1 — teste `FlowEvents_Cluster_Does_NOT_Receive_GatewayKey`). Logo, no FQDN direto do `ca-flow` o endpoint é **anônimo na internet**.
-- **Vetor:** `userId` é o inteiro v1 **sequencial/enumerável**; um chamador anônimo pode iterar `userId=1,2,3…` e obter os correlation-IDs (GUIDs) de cada aluno. O gate `enabled: isAuthenticated` do React é só de UX (client-side) e o `fetchDiplomaSummary` **não envia Bearer** — não há controle de acesso server-side. Correção da claim anterior (que dizia "gateway autentica → só logados alcançam"): **factualmente falsa**, corrigida no Dev Agent Record da 4.6 e nos comentários do código.
-- **Mitigante (por que MEDIUM, não HIGH):** a resposta expõe **zero PII** — só `region` (env), `count` e **GUIDs opacos** (não vazam nome/e-mail/`oid`/valor de compra). É info disclosure do *vínculo* userId→GUIDs; o `/api/flow/recent` (F6, Story 2.6 Done) já expõe os MESMOS GUIDs **sem escopo algum** a qualquer chamador desde 2026. Delta real desta story = só o vínculo por userId, sobre dado que já era público.
-- **Decisão de aceite:** **owner** — contexto de lab didático, dado não-PII, mesma família do débito F6 já aceito (MEDIUM-1). Registrado, não corrigido nesta rodada (mudança só de documentação — restrição da tarefa).
-- **Remediação futura:** escopo infalsificável por identidade = JIT/`X-Entra-OID` no caminho do FlowEvents (o gateway já injeta `X-Entra-OID` nos clusters confiáveis; FlowEvents está fora — precisaria entrar), **ou** ingress interno do `ca-flow` + rota `/flow-events` autenticada no gateway (`RequireAuthorization()` blanket já existe) com o cliente passando o Bearer. Ambos tocam o caminho de identidade → adiado por AC-9 (retro-compat) desta story.
+> **Status: FECHADO** (fix real implementado, não aceito como débito). O owner **rejeitou** aceitar o débito (2026-07-03) e pediu proteção real; o `@architect` desenhou e o owner aprovou a **Opção F (defesa em profundidade)**. Histórico do achado preservado abaixo para rastreabilidade.
+
+- **Origem (histórico):** Story 4.6 (Diploma vivo) adicionou `GET /api/flow/diploma-summary?userId={id}` (`FlowEndpoints.cs`) reusando a MESMA fonte App Insights do F6. Herdava **exatamente** a postura do MEDIUM-1: ingress `external: true`, sem revalidar JWT, fora do `X-Gateway-Key` (ADE-009 Inv 1). No FQDN direto do `ca-flow` o endpoint era **anônimo na internet**, com `userId` v1 **sequencial/enumerável** — um chamador anônimo podia iterar `userId=1,2,3…` e obter os correlation-IDs (GUIDs opacos, zero PII) de cada aluno.
+- **Fix (Opção F — defesa em profundidade, ADE-009 v1.1):** **duas provas independentes** que um chamador anônimo da internet não satisfaz:
+  1. **Identidade** — `fetchDiplomaSummary` passou a mandar `Authorization: Bearer` (via `VITE_GATEWAY_V2_URL`); o blanket `RequireAuthorization()` do gateway barra o anônimo-via-gateway (401 sem token).
+  2. **Proveniência** — o gateway injeta um header **distinto** `X-Diploma-Key` (reuso do **mesmo** `gateway-admin-shared-secret`/`Gateway:AdminSharedSecret`, **route-scoped** à rota `flow-events-diploma`); o FlowEvents valida em **tempo constante** (`CryptographicOperations.FixedTimeEquals`) **só** no `diploma-summary` → barra o FQDN direto do `ca-flow` (o atacante não conhece o segredo).
+- **Retro-compat preservada (bloqueante, verificado):** ingress do `ca-flow` **fica `external`** (sem flip de rede, blast-radius zero no F6); `/recent`/`/{id}`/`/replay`/**SignalR** **intocados** (seguem como MEDIUM-1 aceito); o cluster `flow-events` **continua fora** do `X-Gateway-Key` — o teste `FlowEvents_Cluster_Does_NOT_Receive_GatewayKey` **segue verde** (header/mecanismo distintos, injeção por rota). Testes: FlowEvents 26/26 (+2), Gateway 41/41 (+1: `DiplomaRoute_Injects_XDiplomaKey_ButNever_XGatewayKey`).
+- **Semântica fail-closed/legado:** `DiplomaSharedSecret` configurado no `ca-flow` (KV reference ao mesmo secret — guia Fase 7.4/9) → header ausente/divergente = **401**; vazio → **bypass legado** (preserva dev local e o estado pré-provisionamento).
+- **Residual aceito (fast-follow, declarado):** um aluno **autenticado** ainda pode passar `?userId=<outro>` via gateway (Bearer válido → o gateway injeta o key) e ler GUIDs opacos+count de outro aluno — **zero PII**, igual/menor que o `/recent` (MEDIUM-1). Escopo **infalsificável-por-identidade** (aluno A nunca lê aluno B) = **Opção D** (gateway injeta `X-Entra-OID`; FlowEvents resolve `oid→userId`), **condicionada a verificar** se a telemetria já carrega o `oid` (hoje `customDimensions.UserId` é o int v1 — **não assumir**, Art. IV). Fora desta emenda.
 
 ---
 
@@ -69,7 +73,7 @@ A **lógica** de hardening está correta e fail-closed **no código** (confirmad
 
 1. **Armar `GATEWAY_SHARED_SECRET`/`Gateway__AdminSharedSecret` em todo pipeline** (gateway inject + Functions + McpServer + backend), ou fail-closed quando ausente em Produção (flip do `LegacyBypass` p/ opt-in explícito). Fecha CRITICAL-1 e HIGH-2. **→ Owner: armar ao vivo na subs HML agora (browser-harness); versionar depois.**
 2. **Defesa em profundidade nas Functions** — re-check `email_verified` antes do link na `MeFunction` + `AuthorizationLevel.Function`. Fecha HIGH-1.
-3. **Fixar ingress `internal` do McpServer/FlowEvents em IaC** + auth no FlowEvents. Fecha HIGH-2/MEDIUM-1/MEDIUM-4.
+3. **Fixar ingress `internal` do McpServer/FlowEvents em IaC** + auth no FlowEvents. Fecha HIGH-2/MEDIUM-1. *(MEDIUM-4 já FECHADO pela Opção F — Story 4.6 §Emenda MEDIUM-4.)*
 4. **MI + Key Vault** — secrets → KV references via user-assigned MI; SQL conn → MI. Fecha HIGH-3.
 5. **Diagrama de topologia/segurança atualizado** + reconciliar `deploy-phase-03.yml`. Fecha MEDIUM-2/3.
 

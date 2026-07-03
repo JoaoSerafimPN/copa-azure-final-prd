@@ -378,7 +378,9 @@ O FlowEvents tem **duas** identidades — e isso ilustra o modelo: a **UA compar
 
 ### 7.4 App Settings do FlowEvents (SignalR via Key Vault) **[configurar à mão]**
 
-**Secret KV-backed:** `ca-flow-<sufixo>` → **Settings → Secrets → `+ Add`** → `azure-signalr-conn` → tipo **Key Vault reference** → URI `https://kv-dev-tk-cin-001.vault.azure.net/secrets/azure-signalr-connection-string` → Identity `id-fifa2026-kv-reader`.
+**Secrets KV-backed:** `ca-flow-<sufixo>` → **Settings → Secrets → `+ Add`**:
+- `azure-signalr-conn` → tipo **Key Vault reference** → URI `https://kv-dev-tk-cin-001.vault.azure.net/secrets/azure-signalr-connection-string` → Identity `id-fifa2026-kv-reader`.
+- `diploma-shared-secret` → tipo **Key Vault reference** → URI `https://kv-dev-tk-cin-001.vault.azure.net/secrets/gateway-admin-shared-secret` (o **MESMO** segredo `gateway-admin-shared-secret` que o gateway/backend/Functions/McpServer usam — [Fase 9](#fase-9--migração-sem-downtime-backend--functions-das-quartas--key-vault)) → Identity `id-fifa2026-kv-reader`.
 
 Depois, em **Application → Containers → `Edit and deploy` → Environment variables**:
 
@@ -387,11 +389,14 @@ Depois, em **Application → Containers → `Edit and deploy` → Environment va
 | `AzureSignalRConnectionString` | **secretref** → `azure-signalr-conn` (Key Vault) | hospeda o FlowHub |
 | `LogAnalyticsWorkspaceId` | `<workspace-id>` (Fase 7.3) | qual workspace consultar (Kusto) |
 | `FrontendOrigin` | `https://<seu-frontend>.azurewebsites.net` | CORS do SignalR (credentials → não pode ser `*`) |
+| `DiplomaSharedSecret` | **secretref** → `diploma-shared-secret` (Key Vault) | arma a validação `X-Diploma-Key` do `/api/flow/diploma-summary` (Emenda MEDIUM-4) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` *(opcional; ver [Fase 13](#fase-13--observabilidade-nível-produção-us0))* | secretref → `appinsights-conn` (Key Vault) | telemetria de borda (no-op se ausente) |
 
-> 🔒 **Nota de escopo (não confundir com o F5):** o cluster `flow-events` **NÃO** recebe o `X-Gateway-Key` (fica fora do escopo da ADE-009 Inv 1). Portanto **não** configure `GATEWAY_SHARED_SECRET` no FlowEvents — diferente do McpServer.
+> 🔒 **Nota de escopo (Emenda MEDIUM-4 / ADE-009 v1.1):** o cluster `flow-events` continua **FORA** do `X-Gateway-Key` (recent/timeline/SignalR seguem anônimos, como sempre). A **única** exceção é o endpoint `/api/flow/diploma-summary` (Diploma vivo): o gateway injeta um header **distinto** `X-Diploma-Key` **só nessa rota**, e o `DiplomaSharedSecret` acima (reuso do **mesmo** `gateway-shared-secret` da Fase 9) o valida. **Não** existe `GATEWAY_SHARED_SECRET` no FlowEvents — o header/segredo são de nome próprio, escopados ao Diploma. Vazio (não configurado) = bypass legado (o Diploma segue anônimo, como estava antes da emenda).
 
-✅ **Checkpoint:** MI **System-assigned = On** + **UA `id-fifa2026-kv-reader` anexada**; role **Log Analytics Reader** atribuída à system-assigned no workspace; **Workspace ID** anotado; `AzureSignalRConnectionString` resolvendo do **cofre**, `LogAnalyticsWorkspaceId` + `FrontendOrigin` presentes.
+> 🔎 **Verificação da trava (esquecível!):** se você **pular** o `DiplomaSharedSecret`, o `ca-flow` **não quebra** — mas emite no **startup** um `WARNING` alto (visível em **Log stream / Console** do Container App): *"DiplomaSharedSecret VAZIO … /api/flow/diploma-summary está ANÔNIMO (bypass legado)"*. **Ausência do warning = trava armada.** Se ele aparecer, o Diploma está exposto anônimo no FQDN direto do `ca-flow` (o débito MEDIUM-4 reabre) — volte e configure o `DiplomaSharedSecret`.
+
+✅ **Checkpoint:** MI **System-assigned = On** + **UA `id-fifa2026-kv-reader` anexada**; role **Log Analytics Reader** atribuída à system-assigned no workspace; **Workspace ID** anotado; `AzureSignalRConnectionString` + `DiplomaSharedSecret` resolvendo do **cofre**, `LogAnalyticsWorkspaceId` + `FrontendOrigin` presentes; **nenhum WARNING de `DiplomaSharedSecret` vazio** no startup do `ca-flow`.
 
 ---
 
@@ -433,6 +438,8 @@ O gateway já teve o segredo migrado ([Fase 4.2](#42-migrar-o-gateway__adminshar
 > ⚠️ **Esquecer o `keyVaultReferenceIdentity`** = a reference tenta a system-assigned (talvez ausente) → **não resolve** → o App Setting entrega a **string literal** `@Microsoft.KeyVault(...)` ao app → quebra. É por isso que o **status `Resolved` é o gate**.
 
 > ⭐ **Agora a igualdade é estrutural:** gateway, backend, Functions **e** McpServer referenciam **o mesmo** secret `gateway-admin-shared-secret`. Não dá mais para um lado divergir do outro por engano.
+
+> 🎓 **E o Diploma:** esse **mesmo** `gateway-admin-shared-secret` também alimenta o `DiplomaSharedSecret` do `ca-flow` ([Fase 7.4](#74-app-settings-do-flowevents-signalr-via-key-vault-configurar-à-mão)) — é o valor que o gateway injeta como `X-Diploma-Key` **só** na rota `/api/flow/diploma-summary` e que o FlowEvents valida (Emenda MEDIUM-4 / ADE-009 v1.1). Um segredo, cinco consumidores — zero divergência.
 
 ### 9.2 Pontos onde um erro **derruba as Quartas** (vigie)
 
@@ -743,6 +750,7 @@ Feche a aula com o **quiz** (Google Forms — link fornecido pelo facilitador na
 | `correlationId` não aparece em nenhum nó | SignalR desconectado ou `VITE_FLOW_EVENTS_BASE_URL` incorreto | conferir a Variable (= `{gateway}/flow-events`) e a rota `/flow` conectando ao Hub |
 | SignalR não conecta (WebSocket) | ingress do FlowEvents sem transport **Auto**, ou CORS sem o origin do front | ingress transport = **Auto** (Fase 6); CORS do SignalR + `FrontendOrigin` com o origin exato |
 | **502** em `/flow-events/**` | `FlowEventsUrl` ausente no gateway | definir `FlowEventsUrl = https://<flow-fqdn>` (Fase 8) |
+| **`/diploma` dá 401** (Diploma não carrega a telemetria) | `DiplomaSharedSecret` ausente/divergente no `ca-flow` **ou** o front sem Bearer/`VITE_GATEWAY_V2_URL` | conferir o secretref `diploma-shared-secret` resolvendo (Fase 7.4, **mesmo** valor da Fase 9) **e** o `VITE_GATEWAY_V2_URL` no build do front (o Diploma manda `Authorization: Bearer` via gateway — Emenda MEDIUM-4). Vazio no `ca-flow` = bypass legado (Diploma volta a carregar anônimo) |
 | SignalR recusa por tier | recurso criado em modo **Serverless** | recriar SignalR em **Service Mode Default** (Fase 5) |
 | `AzureSignalRConnectionString` não resolve | secret KV-backed sem a MI anexada / role não propagada | anexar `id-fifa2026-kv-reader` ao FlowEvents (Fase 7.2) + aguardar IAM |
 | Aluno procura um **nó de notificação** dedicado | trade-off aceito (5 nós, notificação inline no Consumer) | reforçar didaticamente (Fase 12.5): a notificação está **dentro** do nó Function Consumer |

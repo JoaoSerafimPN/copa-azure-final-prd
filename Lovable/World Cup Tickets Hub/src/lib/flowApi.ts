@@ -7,7 +7,15 @@
 // WebSocket SignalR não conecta (AC-6).
 // =============================================================================
 
+import { getV2AccessToken } from '@/lib/authV2';
+
 const FLOW_BASE = import.meta.env.VITE_FLOW_EVENTS_BASE_URL ?? '';
+
+// Story 4.6 §Emenda MEDIUM-4 — o Diploma NÃO usa a FLOW_BASE genérica (recent/timeline/replay
+// seguem anônimos, MEDIUM-1 aceito). Vai pela MESMA base do apiV2.ts (o gateway v2) com Bearer:
+// o blanket RequireAuthorization barra o anônimo (401) e o gateway injeta o X-Diploma-Key só
+// nesta rota (ADE-009 v1.1). A rota do FlowEvents fica sob /flow-events no gateway.
+const GATEWAY_V2_URL = import.meta.env.VITE_GATEWAY_V2_URL ?? '';
 
 /**
  * Os 5 tipos de evento = os 5 nós do diagrama, na ordem REAL do fluxo (ADE-008 Inv 5 —
@@ -84,11 +92,24 @@ export interface DiplomaSummary {
   count: number;
 }
 
-/** Story 4.6 — busca o resumo do Diploma escopado ao aluno logado (userId v1 do useAuth). */
+/**
+ * Story 4.6 §Emenda MEDIUM-4 — busca o resumo do Diploma escopado ao aluno logado (userId v1).
+ * DIFERENTE do resto do flowApi: vai pelo GATEWAY v2 (VITE_GATEWAY_V2_URL) com `Authorization:
+ * Bearer` (mesmo accessor do apiV2.ts). O gateway exige o Bearer (blanket RequireAuthorization →
+ * 401 sem token) e injeta o X-Diploma-Key route-scoped que o FlowEvents valida (ADE-009 v1.1) —
+ * as duas provas que fecham o buraco anônimo do MEDIUM-4. Sem token (sem sessão CIAM), a chamada
+ * segue e o gateway responde 401 (comportamento esperado do endpoint protegido).
+ */
 export async function fetchDiplomaSummary(userId: string): Promise<DiplomaSummary> {
+  const token = await getV2AccessToken();
   const response = await fetch(
-    `${FLOW_BASE}/api/flow/diploma-summary?userId=${encodeURIComponent(userId)}`,
-    { headers: { Accept: 'application/json' } },
+    `${GATEWAY_V2_URL}/flow-events/api/flow/diploma-summary?userId=${encodeURIComponent(userId)}`,
+    {
+      headers: {
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    },
   );
   if (!response.ok) {
     throw new Error(`Falha ao obter o resumo do Diploma (${response.status}).`);
